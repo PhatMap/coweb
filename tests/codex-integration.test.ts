@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,6 +32,29 @@ import {
 
 const roots: string[] = [];
 
+function symlinkCapabilityReason(): string | undefined {
+  const root = mkdtempSync(join(tmpdir(), "coweb-symlink-capability-"));
+  const target = join(root, "target");
+  const alias = join(root, "alias");
+  try {
+    writeFileSync(target, "target\n");
+    symlinkSync(target, alias);
+    return undefined;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM" || code === "ENOTSUP") {
+      return `symlink capability unavailable (${code})`;
+    }
+    throw error;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const symlinkSkipReason = symlinkCapabilityReason();
+const symlinkTestName = (name: string) =>
+  symlinkSkipReason === undefined ? name : `${name} [${symlinkSkipReason}]`;
+
 function nativeConfig(mode: "browser-only" | "full") {
   const config = defaultConfig(mode);
   config.subagentProtocol = "native";
@@ -62,7 +85,7 @@ afterEach(() => {
 });
 
 describe("reversible native Codex route integration", () => {
-  test("route install, update, switching and removal preserve a symlinked shared Codex config", () => {
+  test.skipIf(symlinkSkipReason !== undefined)(symlinkTestName("route install, update, switching and removal preserve a symlinked shared Codex config"), () => {
     const { root, codexHome } = fixture();
     const shared = join(root, "shared");
     mkdirSync(shared, { mode: 0o750 });
@@ -96,7 +119,7 @@ describe("reversible native Codex route integration", () => {
     expect(readFileSync(target, "utf8")).toBe(original);
   });
 
-  test("config compensation preserves the link and refuses redirected or invalid targets", () => {
+  test.skipIf(symlinkSkipReason !== undefined)(symlinkTestName("config compensation preserves the link and refuses redirected or invalid targets"), () => {
     const { root, codexHome } = fixture();
     const alias = join(codexHome, "config.toml");
     const target = join(root, "shared.toml");

@@ -6,6 +6,26 @@ const path = require("node:path");
 const { CURRENT_CONNECTOR_NAME, DEV_CONNECTOR_NAME } = require("../electron/connector-identity.cjs");
 const { RuntimeHost } = require("../electron/runtime.cjs");
 
+function symlinkCapabilityReason() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "coweb-symlink-capability-"));
+  const target = path.join(root, "target");
+  const alias = path.join(root, "alias");
+  try {
+    fs.writeFileSync(target, "target\n");
+    fs.symlinkSync(target, alias);
+    return undefined;
+  } catch (error) {
+    if (["EACCES", "EPERM", "ENOTSUP"].includes(error.code)) {
+      return `symlink capability unavailable (${error.code})`;
+    }
+    throw error;
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+const symlinkSkipReason = symlinkCapabilityReason();
+
 function hostFor(existingConfig, interactionMode = "automatic") {
   const host = new RuntimeHost({
     app: {
@@ -1000,7 +1020,7 @@ test("failed terminal migration verifies the unchanged previous runtime instead 
   ]);
 });
 
-test("failed launcher update restores every mutable setup file before restarting the previous runtime", async () => {
+test("failed launcher update restores every mutable setup file before restarting the previous runtime", { skip: symlinkSkipReason }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "coweb-setup-checkpoint-"));
   const coreHome = path.join(root, "core");
   const codexHome = path.join(root, "codex");
