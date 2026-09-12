@@ -1,0 +1,54 @@
+node_modules/
+dist/
+.*.bun-build
+coverage/
+.DS_Store
+.env
+*.log
+*.pid
+*.sock
+*.key
+storage-state.json
+runtime/
+.launcher-runtime/
+launcher/build/
+launcher/release/
+launcher/artifacts/
+.playwright-cli/
+output/
+notes.md
+
+# Local credentials, browser sessions and generated application state
+.env.*
+!.env.example
+.coweb/
+.coweb-dev/
+.codex/
+.codex-chatgpt-web/
+.codex-chatgpt-web-dev/
+browser-profile/
+browser-profiles/
+userData/
+Partitions/
+Cookies
+Cookies-journal
+Local Storage/
+Session Storage/
+IndexedDB/
+diagnostics/
+*.jsonl
+*.pem
+*.p12
+*.pfx
+auth.json
+credentials.json
+launcher-state.json
+launcher-browser.json
+.codebase-memory/
+
+# Unused upstream promotional/tutorial recordings retained locally, not distributed
+assets/demo.gif
+launcher/src/assets/mcp-connect-connector.gif
+launcher/src/assets/mcp-connect-connector.mp4
+launcher/src/assets/mcp-create-tunnel.gif
+launcher/src/assets/mcp-create-tunnel.mp4
