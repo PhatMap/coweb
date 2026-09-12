@@ -1,7 +1,7 @@
 # CoWeb Project Chat Mode Design
 
-Status: design proposal, pending approval. This document does not implement
-Project Chat.
+Status: approved design revision, documentation only. This document does not
+implement Project Chat.
 
 ## Scope and Goals
 
@@ -102,10 +102,11 @@ type ChatSurfaceMode = "temporary" | "project";
 type ChatSurfaceBinding = {
   taskId: string;
   mode: ChatSurfaceMode;
-  surfaceKey: string;          // local CoWeb identity, never a URL alone
-  conversationId?: string;     // provider identity, verified before use
+  surfaceKey: string; // local CoWeb identity, never a URL alone
+  conversationId?: string; // provider identity, verified before use
   conversationUrl?: string;
   projectId?: string;
+  projectEpoch?: string;
   capability: {
     projectOpened: "yes" | "no" | "unknown";
     appsOrTools: "yes" | "no" | "unknown";
@@ -128,32 +129,40 @@ Add the smallest versioned configuration owned by `src/config.ts`:
 type ChatMode = "temporary" | "project";
 
 type ProjectChatConfig = {
-  mode: "project";
-  projectUrl: string;
-  projectId?: string;
+  name: string;
 };
 
-// AppConfig addition
+type ResolvedProjectIdentity = {
+  configuredName: string;
+  projectId?: string;
+  projectUrl: string;
+  verifiedAt: string;
+  epoch: string;
+};
+
+// AppConfig addition; exact field naming follows existing config conventions.
 chatMode?: ChatMode;
 projectChat?: ProjectChatConfig;
 ```
 
 The exact schema should be finalized during implementation after checking the
 existing config migration conventions. The default is `temporary` when
-`chatMode` is absent. Project mode requires a configured absolute HTTPS
-`projectUrl`; an optional stable `projectId` is a verified identity hint, not
-an unchecked caller assertion.
+`chatMode` is absent. Project mode requires a non-empty configured project
+name; configuration does not ask the user for a provider URL or provider ID.
 
 Resolution order:
 
-1. Use a verified stable provider project ID if the page exposes one.
-2. Otherwise canonicalize and retain the configured project URL as the project
-   identity input.
-3. Never select a project by title matching when a stable identity is absent.
-4. If identity cannot be proven, fail closed with an actionable capability
-   report rather than opening an arbitrary project.
+1. Use the configured name only to discover candidate projects in the
+   authenticated browser.
+2. Require exactly one candidate; duplicate names fail closed and never choose
+   the first or most recent candidate.
+3. Verify the candidate using provider evidence, then resolve a stable provider
+   ID when available and its canonical project URL.
+4. Persist the verified identity and a new epoch as CoWeb-owned state.
+5. Never use title/name matching as runtime ownership proof. If identity cannot
+   be proven, fail closed with an actionable capability report.
 
-No personal project URL or ID is hardcoded.
+No personal project name, URL, or ID is hardcoded.
 
 ## Durable Conversation Registry
 
@@ -169,6 +178,8 @@ type ManagedConversation = {
   taskId: string;
   conversationId: string;
   conversationUrl: string;
+  configuredProjectName: string;
+  projectEpoch: string;
   projectId?: string;
   projectUrl: string;
   createdAt: string;
@@ -183,17 +194,29 @@ type ManagedConversation = {
 ```
 
 The implementation may add schema version and a registry revision for atomic
-updates. One task may have one active record per project/mode epoch. A registry
-lookup must match the canonical Codex task identity and verified project
-identity; it must never fall back to the most recent chat or a URL currently
-visible in the browser.
+updates. One task may have one active record per resolved project epoch. A
+registry lookup must match the canonical Codex task identity and the verified
+project identity/epoch; it must never fall back to the configured name, most
+recent chat, or a URL currently visible in the browser.
 
 On startup, records in `active` state are recoverable candidates, not proof that
 the browser surface is usable. Recovery must reopen the configured project,
 locate the exact verified conversation identity, verify composer/session state,
 then lease the record. A URL alone is insufficient. If recovery cannot prove
-identity, keep the record and mark the surface degraded rather than binding a
-different chat.
+identity, keep the record stale/orphaned and mark the surface degraded rather
+than binding a different chat. Conversation records from another project epoch
+are never recoverable.
+
+### Project replacement and epochs
+
+The user may delete a ChatGPT Project to bulk-remove its CoWeb conversations,
+then create a replacement with the same name. CoWeb must detect that the
+verified project identity no longer exists or no longer matches. The old
+resolved identity and all conversation records in its epoch become stale or
+orphaned. CoWeb then discovers the new unique candidate by configured name,
+verifies it, persists a new resolved identity and epoch, and starts new Project
+conversation bindings. Same-name equivalence never rebinds an old conversation
+to the replacement project.
 
 ## Data Flow and Task Binding
 
@@ -222,9 +245,11 @@ active -> completed -> archived -> optionally deleted
 ```
 
 Only CoWeb-created records with an ownership proof may transition through this
-lifecycle. Active records are never cleaned up. Archive precedes any future
-permanent deletion, and deletion is opt-in and must use a provider-supported
-operation, never DOM removal.
+local lifecycle. Initial Project Chat does not require automatic per-chat
+archive/delete. Manual deletion of the entire ChatGPT Project is the preferred
+bulk-cleanup workflow. After replacement, CoWeb invalidates the old epoch and
+rebinds only to a newly verified project; managed per-chat archive/delete is
+future optional functionality and must never touch unrelated projects.
 
 An active turn owns its surface until all existing completion conditions hold:
 
@@ -251,10 +276,10 @@ Safe flow:
 ```text
 active project conversation
   -> current turn settles and checkpoint is canonical
-  -> provision successor in the same verified project
+  -> provision successor in the same verified project epoch
   -> verify project identity, conversation identity, and composer
   -> atomically bind successor to the task
-  -> mark old record completed, then archive candidate
+  -> mark old record completed; retain local cleanup metadata
 ```
 
 If successor provisioning or verification fails, retain the old completed
@@ -329,16 +354,19 @@ type ProjectCapabilityReport = {
   appsOrToolsAvailable: "yes" | "no" | "unknown";
   fullHarnessAvailable: "yes" | "no";
   verifiedProjectId?: string;
+  canonicalProjectUrl?: string;
+  projectEpoch?: string;
   verifiedConversationId?: string;
 };
 ```
 
-`projectOpened` requires exact project identity evidence. Apps/tools are `yes`
-only when a focused probe observes the expected capability surface; absence or
-UI variation is `no` or `unknown`, not an inferred success. Full Harness is
-`yes` only when the existing tunnel, broker, connector, and active-turn checks
-pass. The report must be safe to show in diagnostics without exposing cookies,
-tokens, prompts, or private URLs beyond the configured project identity.
+`projectOpened` requires exact project identity evidence after unique-name
+discovery. Apps/tools are `yes` only when a focused probe observes the expected
+capability surface; absence or UI variation is `no` or `unknown`, not an
+inferred success. Full Harness is `yes` only when the existing tunnel, broker,
+connector, and active-turn checks pass. The report must be safe to show in
+diagnostics without exposing cookies, tokens, prompts, or private URLs beyond
+the resolved project identity.
 
 ## Browser and Launcher Ownership
 
@@ -363,8 +391,10 @@ in browser storage.
   prompts, tool results, or authorization headers in the registry.
 - Project identity and conversation identity are untrusted browser data until
   verified against the requested project and task-owned registry record.
-- Cleanup is ownership-gated, active-safe, archive-first, and opt-in for any
-  permanent deletion.
+- Initial Project Chat does not require managed per-chat archive/delete. Manual
+  deletion of the whole ChatGPT Project is the preferred bulk-cleanup flow.
+- Local state invalidation and epoch rebinding are ownership-gated; any future
+  per-chat archive/delete remains optional and opt-in.
 - Unrelated user conversations and projects are never modified.
 - Full Harness tool execution remains subject to existing Codex sandbox and
   approval controls.
@@ -405,10 +435,13 @@ and registry tests before browser selectors.
 
 Pure tests first:
 
-- config default/migration: absent `chatMode` equals `temporary`;
-- registry atomic persistence, schema validation, task isolation, project
-  identity matching, restart recovery, active-record protection, archive-first
-  transitions, and no-secret fields;
+- config default/migration: absent `chatMode` equals `temporary`; Project mode
+  validates only a configured name;
+- resolved-project identity persistence: configured name, verified provider
+  identity, canonical URL, verification time, and epoch;
+- registry atomic persistence, schema validation, task isolation, resolved
+  project identity/epoch matching, restart recovery, active-record protection,
+  stale-epoch invalidation, and no-secret fields;
 - strategy state machine for provision, bind, complete, rollover, stale
   recovery, ambiguous submission, and failed successor creation;
 - capability report tri-state behavior;
@@ -417,6 +450,8 @@ Pure tests first:
 Browser/launcher contracts:
 
 - project navigation and stable identity verification;
+- unique-name discovery and duplicate-name fail-closed behavior;
+- deleted-project detection, replacement discovery, and new-epoch binding;
 - normal conversation creation and exact conversation ID extraction;
 - composer/session verification after creation and recovery;
 - retained surface selection by task-owned binding;
@@ -424,10 +459,10 @@ Browser/launcher contracts:
 
 Cross-product matrix:
 
-| Mode | Browser-only | Full Harness |
-| --- | --- | --- |
-| Temporary | existing regression suite; onboarding; cancellation; compaction | existing MCP binding; tool completion; cancellation; tunnel teardown |
-| Project | project navigation; registry binding; restart; rollover; stale recovery | all Browser-only cases plus tool binding, approval, cancellation, completion, compaction, and tunnel teardown |
+| Mode      | Browser-only                                                            | Full Harness                                                                                                  |
+| --------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Temporary | existing regression suite; onboarding; cancellation; compaction         | existing MCP binding; tool completion; cancellation; tunnel teardown                                          |
+| Project   | project navigation; registry binding; restart; rollover; stale recovery | all Browser-only cases plus tool binding, approval, cancellation, completion, compaction, and tunnel teardown |
 
 Failure cases required in every applicable project column:
 
@@ -437,7 +472,8 @@ Failure cases required in every applicable project column:
 - duplicate task does not reuse another task's chat;
 - failed successor creation preserves canonical Codex state;
 - no duplicate mutation after recovery;
-- cleanup never touches active or unrelated chats.
+- replacement never recovers a conversation across project epochs;
+- cleanup/invalidation never touches unrelated chats or projects.
 
 Temporary-mode regression tests must remain unchanged except for shared test
 helpers and must continue to pass without a project configuration.
@@ -446,18 +482,22 @@ helpers and must continue to pass without a project configuration.
 
 1. Approve this design and settle provider-specific identity/capability
    unknowns.
-2. Add versioned config parsing with `temporary` default and no browser change.
+2. Add versioned config parsing with `temporary` default and configured Project
+   name validation only; no browser change.
 3. Add pure registry module and state-machine tests; keep it disconnected from
    browser selectors.
 4. Add a strategy contract and adapt Temporary mode without behavior change.
-5. Add Project navigation/identity probes and focused browser-host contracts.
-6. Add project provisioning and task-owned binding for Browser-only mode.
-7. Add restart recovery and bounded rollover at safe completion/compaction
-   boundaries.
+5. Add unique-name Project discovery, identity resolution, duplicate ambiguity
+   failure, and focused browser-host contracts.
+6. Add project provisioning, resolved-epoch persistence, and task-owned binding
+   for Browser-only mode.
+7. Add deleted-project invalidation, replacement rebind, restart recovery, and
+   bounded rollover at safe completion/compaction boundaries.
 8. Integrate Full Harness broker binding, cancellation, completion fence, and
    compaction handoff.
-9. Add capability diagnostics, archive lifecycle, and opt-in cleanup only after
-   ownership evidence is stable.
+9. Add capability diagnostics and optional managed cleanup only after ownership
+   evidence is stable; manual whole-Project deletion remains the initial bulk
+   cleanup workflow.
 10. Run the full CI matrix and authenticated/manual browser validation; do not
     enable permanent deletion in the first release.
 

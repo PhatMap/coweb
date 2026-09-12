@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add an independently testable Project Chat execution surface while preserving Temporary Chat, the canonical Codex task/thread, and existing Responses/SSE/MCP/tunnel/cancellation contracts.
+**Goal:** Add an independently testable Project Chat execution surface while preserving Temporary Chat, the canonical Codex task/thread, and existing Responses/SSE/MCP/tunnel/cancellation contracts. The user configures only a Project name; provider identity is discovered and verified in the authenticated browser.
 
 **Architecture:** Add a `ChatSurfaceStrategy` boundary between `ChatGptWebAdapter`/turn execution and browser selectors. `TemporaryChatStrategy` owns the existing Temporary Chat flow without observable changes; `ProjectChatStrategy` owns verified project/conversation selection and the CoWeb registry. The registry stores recovery metadata only, and becomes authoritative only after configured project identity, exact conversation identity, project membership, composer/session readiness, and task ownership all succeed.
 
@@ -14,14 +14,17 @@
 
 - Existing configurations with no `chatMode` continue to mean `temporary`.
 - Codex task/thread remains the canonical source of truth; ChatGPT conversations are execution surfaces and recovery metadata.
-- Do not use URL or title alone as project/conversation ownership proof.
+- Do not use URL, title, or configured name alone as project/conversation ownership proof.
+- Project name is a discovery key only. Require one unique candidate, fail closed on duplicate names, and never choose the first or most recent project.
+- Persist resolved project identity separately from config: configured name, optional provider ID, canonical URL, verification time, and a new epoch.
+- Conversation records bind to the resolved project identity and epoch; same-name replacement never reuses an old epoch.
 - Do not persist a partially provisioned Project conversation as an `active` durable registry record.
 - A durable `active` binding requires, in order: configured project identity verified; exact normal conversation identity verified; conversation membership in the requested project verified; composer/session readiness verified; task ownership check passed.
 - Any unverified provisioning attempt is transient. If bounded recovery metadata is needed, use a separate pending/submission journal with explicit state and no secret payload.
 - Preserve the existing Responses fields, SSE events, MCP protocol, connector names, tunnel protocol, loopback paths, cancellation, completion fences, and compaction contracts.
 - Temporary mode must remain behaviorally unchanged and its existing tests must stay green.
 - Registry files contain no cookies, storage state, tokens, tunnel keys, prompts, tool results, authorization headers, or credentials.
-- Cleanup is ownership-gated and archive-first: `active → completed → archived → optionally deleted`; permanent deletion is opt-in and requires verified provider semantics.
+- Manual deletion of the whole ChatGPT Project is the initial bulk-cleanup workflow. Managed per-chat archive/delete is optional future work and never a prerequisite for Project mode.
 - No timer is a correctness mechanism for rollover or recovery.
 - Do not invent selectors, project IDs, undocumented APIs, or provider behavior. Mark them `Unknown — requires authenticated browser verification`.
 - Use the repository-pinned Bun version, frozen lockfiles, native `git`, and the existing GitHub remote. Do not use GitKraken.
@@ -45,6 +48,7 @@ Expected new modules are deliberately small and may be placed as follows after s
 - `src/temporary-chat-strategy.ts`: adapter around the existing Temporary Chat preparation/retention behavior.
 - `src/project-chat-strategy.ts`: project provisioning, verified binding, bounded reconciliation and rollover orchestration.
 - `src/project-conversation-registry.ts`: pure durable registry and transition validation, disconnected from browser selectors.
+- `src/project-identity-state.ts`: CoWeb-owned resolved Project identity and epoch persistence, separate from user config and conversation records.
 - `src/project-capability.ts`: provider evidence types and pure tri-state capability aggregation, with browser adapters kept elsewhere.
 
 If current conventions place these responsibilities in an existing module, retain the same boundaries and record the chosen paths in the implementation PR. Do not grow `browser-worker.ts` into a registry or state machine.
@@ -68,9 +72,7 @@ If current conventions place these responsibilities in an existing module, retai
 type ChatMode = "temporary" | "project";
 
 type ProjectChatConfig = {
-  mode: "project";
-  projectUrl: string;
-  projectId?: string;
+  name: string;
 };
 
 type AppConfig = ExistingAppConfig & {
@@ -79,9 +81,9 @@ type AppConfig = ExistingAppConfig & {
 };
 ```
 
-The parsed runtime config must always expose `chatMode`; absent input maps to `temporary`. `temporary` must remove or ignore unusable project settings at the same normalization boundary used by existing config migrations. `project` requires an absolute HTTPS `projectUrl`; an optional `projectId` is a bounded identity hint and never proof by itself. Reject malformed URLs, non-HTTPS schemes, empty values, invalid mode values, and project config with a mismatched mode. Preserve the existing config version migration behavior and exact error style.
+The parsed runtime config must always expose `chatMode`; absent input maps to `temporary`. `temporary` must remove or ignore Project settings at the same normalization boundary used by existing config migrations. `project` requires only a non-empty, trimmed `projectChat.name`; it must not require a provider URL or provider ID. Validate the name using the smallest generic constraints supported by current config conventions. Provider URL/ID resolution belongs to the authenticated browser identity-probe phase. Document provider-specific identity details as `Unknown — requires authenticated browser verification`.
 
-- [ ] Write failing tests for absent `chatMode` defaulting to `temporary`, explicit temporary config, valid project config, invalid project URL/scheme, invalid project ID shape, and legacy config round-trip.
+- [ ] Write failing tests for absent `chatMode` defaulting to `temporary`, explicit temporary config, valid configured Project name, empty/whitespace/invalid name, and legacy config round-trip.
 - [ ] Run the focused config tests and confirm failures are caused by the missing contract, not fixture setup.
 - [ ] Implement the smallest parser/default/migration change in `src/config.ts`; do not navigate a browser or choose a conversation.
 - [ ] Run focused config/setup tests, `bun run typecheck`, and the existing Temporary-related tests.
@@ -101,6 +103,7 @@ The parsed runtime config must always expose `chatMode`; absent input maps to `t
 **Files:**
 
 - Create: `src/project-conversation-registry.ts`.
+- Create: `src/project-identity-state.ts` for the verified resolved Project identity/epoch state.
 - Modify: `src/config.ts` only if it needs an exported CoWeb state-path helper; use existing atomic/private-file helpers rather than a second persistence mechanism.
 - Test: `tests/project-conversation-registry.test.ts`.
 - Test: existing atomic-file/config tests only when sharing helpers.
@@ -110,10 +113,20 @@ The parsed runtime config must always expose `chatMode`; absent input maps to `t
 ```ts
 type ManagedConversationState = "active" | "completed" | "archived";
 
+type ResolvedProjectIdentity = {
+  configuredName: string;
+  projectId?: string;
+  projectUrl: string;
+  verifiedAt: string;
+  epoch: string;
+};
+
 type VerifiedConversationBinding = {
   taskId: string;
   conversationId: string;
   conversationUrl: string;
+  configuredProjectName: string;
+  projectEpoch: string;
   projectUrl: string;
   projectId?: string;
   surfaceKey: string;
@@ -130,16 +143,16 @@ type ManagedConversation = VerifiedConversationBinding & {
 
 type ProjectConversationRegistry = {
   read(): RegistrySnapshot;
-  findActive(taskId: string, projectIdentity: ProjectIdentity): ManagedConversation | undefined;
+  findActive(taskId: string, projectIdentity: ResolvedProjectIdentity): ManagedConversation | undefined;
   activate(binding: VerifiedConversationBinding): ManagedConversation;
   complete(taskId: string, conversationId: string): ManagedConversation;
   archive(taskId: string, conversationId: string): ManagedConversation;
 };
 ```
 
-Add a registry schema version and monotonic revision. `activate` accepts only a fully verified binding; it must not accept a URL/title-only candidate, a missing conversation ID, a missing project proof, or an unverified pending attempt. Task ID and verified project identity must match for lookup. Only CoWeb-owned records can transition. Active records cannot be archived or deleted. Atomic writes use restrictive permissions and preserve the previous file if serialization or rename fails. Corrupt/unknown-schema files return a safe degraded result with an actionable error and never become active records. A separate bounded `PendingProvisioning`/submission journal may contain task ID, surface key, provider IDs already observed, prompt fingerprint and attempt state, but no prompt body or secret; it must never be read as an active binding.
+Add a registry schema version and monotonic revision. Persist a separate resolved-project identity with configured name, optional provider ID, canonical project URL, `verifiedAt`, and epoch. `activate` accepts only a fully verified binding for the current resolved identity/epoch; it must not accept a URL/title/name-only candidate, a missing conversation ID, a missing project proof, or an unverified pending attempt. Task ID and resolved project identity/epoch must match for lookup. If the provider project disappears or is replaced, mark the old identity/epoch stale/orphaned and never recover its conversations under a same-name replacement. Only CoWeb-owned records can transition. Active records cannot be archived or deleted. Atomic writes use restrictive permissions and preserve the previous file if serialization or rename fails. Corrupt/unknown-schema files return a safe degraded result with an actionable error and never become active records. A separate bounded `PendingProvisioning`/submission journal may contain task ID, surface key, provider IDs already observed, prompt fingerprint and attempt state, but no prompt body or secret; it must never be read as an active binding.
 
-- [ ] Write failing tests for schema/revision, atomic write/readback, task/project matching, exact conversation matching, active/completed/archived transitions, ownership rejection, active cleanup protection, no-secret serialization, corrupt JSON, unknown schema, and failed-write recovery.
+- [ ] Write failing tests for schema/revision, atomic write/readback, task/resolved-project/epoch matching, exact conversation matching, active/completed/archived transitions, ownership rejection, stale-epoch invalidation, active cleanup protection, no-secret serialization, corrupt JSON, unknown schema, and failed-write recovery.
 - [ ] Run `bun test tests/project-conversation-registry.test.ts` and verify the tests fail before implementation.
 - [ ] Implement the pure registry with dependency-injected clock/path/write seams only where existing tests need them; do not import Playwright, Electron, browser selectors, MCP, or tunnel code.
 - [ ] Run the registry tests and inspect the written fixture JSON to prove it contains IDs and timestamps only, never cookies/tokens/prompts/headers.
@@ -199,6 +212,7 @@ The shared binding must carry local `surfaceKey`, canonical task ID, mode, and c
 - Create: `src/project-capability.ts` for pure evidence/report types and validation.
 - Modify: `src/adapters/chatgpt-web/browser-worker.ts` for focused read-only probe methods and exact evidence extraction.
 - Modify: `launcher/electron/browser-host.cjs` and/or `src/launcher-browser-host.ts` only where the existing managed surface needs to expose the same read-only probe through the launcher contract.
+- Modify: `src/project-identity-state.ts` to commit a verified identity and new epoch only after the probe's evidence gate.
 - Modify: `src/adapters/chatgpt-web/index.ts` to expose the probe through the strategy boundary.
 - Test: `tests/project-capability.test.ts`, `tests/project-browser-probe.test.ts`, and launcher/browser contract tests where the existing ownership belongs.
 
@@ -210,6 +224,8 @@ type ProjectCapabilityReport = {
   appsOrToolsAvailable: "yes" | "no" | "unknown";
   fullHarnessAvailable: "yes" | "no";
   verifiedProjectId?: string;
+  canonicalProjectUrl?: string;
+  projectEpoch?: string;
   verifiedConversationId?: string;
 };
 
@@ -220,9 +236,9 @@ type ProjectIdentityEvidence = {
 };
 ```
 
-Probe sequence: open the configured project, verify stable project identity against the configured URL/optional hint, extract a normal conversation ID only from provider evidence, verify project membership, verify composer/session readiness, then report apps/tools capability. A title or visible URL alone is insufficient. Probe is read-only: it must not create a conversation, send a prompt, mutate project settings, change connector configuration, or write an active registry record. `fullHarnessAvailable` is `yes` only when the existing tunnel/broker/connector checks pass.
+Probe sequence: discover projects by the configured name; require exactly one candidate; fail closed on duplicate names; verify stable project identity; resolve a stable provider ID when available and canonical project URL; persist a new resolved identity/epoch only after verification; then extract a normal conversation ID only from provider evidence, verify project membership, verify composer/session readiness, and report apps/tools capability. A title, configured name, or visible URL alone is insufficient. Probe is read-only: it must not create a conversation, send a prompt, mutate project settings, change connector configuration, or write an active conversation registry record. `fullHarnessAvailable` is `yes` only when the existing tunnel/broker/connector checks pass.
 
-- [ ] Write pure tests for tri-state capability aggregation, canonical URL handling, project-ID mismatch, absent stable identity, conversation-ID shape, and safe diagnostic redaction.
+- [ ] Write pure tests for tri-state capability aggregation, unique-name discovery, duplicate-name ambiguity, canonical URL handling, project-ID mismatch, absent stable identity, conversation-ID shape, deleted-project detection, epoch replacement, and safe diagnostic redaction.
 - [ ] Add authenticated browser contract fixtures or a manual verification script only after identifying selectors from the live provider; mark every unverified selector `Unknown — requires authenticated browser verification`.
 - [ ] Run pure tests and a read-only authenticated probe, confirming failures are fail-closed and do not mutate the account.
 - [ ] Run existing browser/launcher typecheck and contract tests.
@@ -246,15 +262,15 @@ Probe sequence: open the configured project, verify stable project identity agai
 - Modify: `launcher/electron/browser-host.cjs` only for the existing physical surface selection contract; no registry persistence in Electron/browser storage.
 - Test: `tests/project-chat-strategy.test.ts`, `tests/project-browser-binding.test.ts`, `tests/turn-broker-lifecycle.test.ts` only for unchanged integration assertions.
 
-**Binding invariant:** Provisioning remains transient until all five pieces of evidence pass: configured project identity, exact normal conversation identity, requested project membership, composer/session readiness, and task ownership. Only then call `registry.activate`. A restart sees an active record as a recoverable candidate and must reopen/verify the exact project and conversation before lease. Never select the most recent chat, a title match, or a visible URL.
+**Binding invariant:** Provisioning remains transient until all five pieces of evidence pass: uniquely discovered and verified project identity, exact normal conversation identity, requested project membership, composer/session readiness, and task ownership. Only then persist the resolved identity/epoch and call `registry.activate`. A restart sees an active record as a recoverable candidate and must reopen/verify the exact project epoch and conversation before lease. Never select the most recent chat, a title match, configured-name match, or visible URL.
 
-- [ ] Write failing state-machine tests for provision success, each missing-evidence failure, task collision, exact task/project reuse, restart candidate recovery, and no active record before verification.
+- [ ] Write failing state-machine tests for unique discovery, duplicate-name ambiguity, provision success, each missing-evidence failure, task collision, exact task/project/epoch reuse, restart candidate recovery, deleted-project invalidation, replacement with a new epoch, and no active record before verification.
 - [ ] Run those tests red.
 - [ ] Implement transient provisioning and verified activation; pass the resulting binding into existing turn execution for Browser-only mode.
 - [ ] Add authenticated browser tests/manual evidence for project navigation, conversation creation, exact ID extraction, membership, composer readiness, reuse and restart recovery.
 - [ ] Run all Temporary regressions and Project Browser-only tests.
 
-**Rollback/failure boundary:** On any provisioning failure, close/retire only the transient surface and preserve canonical Codex state. If ambiguous metadata is needed, write a bounded pending journal; never promote it to `active`. A task collision fails closed and never touches the other task's conversation.
+**Rollback/failure boundary:** On any provisioning failure, close/retire only the transient surface and preserve canonical Codex state. If ambiguous metadata is needed, write a bounded pending journal; never promote it to `active`. A task collision or duplicate project name fails closed and never touches another task/project. When a prior project is deleted or replaced, invalidate its epoch and start a new one without attempting conversation recovery across epochs.
 
 **Validation command:** `bun test tests/project-chat-strategy.test.ts tests/project-browser-binding.test.ts tests/chatgpt-web-harness.test.ts`; `bun run typecheck`; authenticated browser verification required.
 
@@ -298,7 +314,7 @@ Probe sequence: open the configured project, verify stable project identity agai
 - Modify: `src/adapters/chatgpt-web/browser-worker.ts` for same-project successor provisioning and verification.
 - Test: `tests/project-rollover.test.ts`, `tests/project-conversation-registry.test.ts`, existing compaction tests.
 
-**Safe flow:** require current turn settlement, canonical checkpoint/response state, no active MCP work when applicable, committed completion fence, terminal browser/helper evidence and physical settlement; provision successor in the same verified project; verify successor project/conversation/composer; atomically activate successor; then mark predecessor completed and archive candidate. Explicit rollover, post-completion rollover and compaction-safe rollover use the same invariant. A soft age/count request may suggest rollover but cannot establish correctness.
+**Safe flow:** require current turn settlement, canonical checkpoint/response state, no active MCP work when applicable, committed completion fence, terminal browser/helper evidence and physical settlement; provision successor in the same verified project epoch; verify successor project/conversation/composer; atomically activate successor; then mark predecessor completed. Explicit rollover, post-completion rollover and compaction-safe rollover use the same invariant. A soft age/count request may suggest rollover but cannot establish correctness. A project replacement always starts a new epoch and is not a rollover path for old conversations.
 
 - [ ] Write failing tests for explicit rollover, post-completion rollover, compaction boundary, active-tool refusal, failed successor, successor identity mismatch, atomic predecessor/successor update, and canonical Codex-state preservation.
 - [ ] Run tests red.
@@ -338,27 +354,27 @@ Probe sequence: open the configured project, verify stable project identity agai
 
 ---
 
-### Phase 9: Managed cleanup
+### Phase 9: Project replacement and optional managed cleanup
 
-**Dependency:** Verified ownership and stable lifecycle from Phases 2, 5, 7 and 8. **Browser/account access:** Yes for archive capability verification; deletion remains disabled unless provider semantics are proven.
+**Dependency:** Verified ownership and stable lifecycle from Phases 2, 4, 5, 7 and 8. **Browser/account access:** Yes for deleted-project detection and replacement verification; per-chat archive/delete is optional and may remain deferred.
 
 **Files:**
 
-- Modify: `src/project-conversation-registry.ts` for ownership-gated lifecycle methods.
-- Modify: `src/project-chat-strategy.ts` for explicit cleanup orchestration after safe boundaries.
-- Modify: `src/adapters/chatgpt-web/browser-worker.ts` only for provider-supported archive operation and exact identity evidence.
-- Modify: launcher/UI diagnostics modules only to display owned lifecycle state; never expose private URLs beyond configured identity.
-- Test: `tests/project-cleanup.test.ts`, registry transition tests, browser cleanup contract tests.
+- Modify: `src/project-conversation-registry.ts` for resolved-identity/epoch invalidation and ownership-gated local lifecycle methods.
+- Modify: `src/project-chat-strategy.ts` for deleted-project detection, replacement discovery, and new-epoch binding.
+- Modify: `src/adapters/chatgpt-web/browser-worker.ts` only for provider identity evidence; do not add bulk deletion as a prerequisite.
+- Modify: launcher/UI diagnostics modules only to display owned identity/epoch state; never expose private URLs beyond configured identity.
+- Test: `tests/project-replacement.test.ts`, `tests/project-cleanup.test.ts` only for optional future cleanup gates.
 
-**Lifecycle:** only `createdByCoweb: true` records can move `active → completed → archived`. Active records are never cleaned. Archive is the first remote mutation. Permanent deletion is opt-in, disabled by default, and deferred when provider deletion cannot be verified. Unrelated conversations/projects, title matches and provider-wide cleanup are forbidden.
+**Lifecycle:** manual deletion of the whole ChatGPT Project is the preferred initial bulk-cleanup workflow. When the verified project disappears or mismatches, mark its identity/epoch and conversation records stale/orphaned, then discover and verify a unique replacement by configured name and persist a new epoch. Never recover old conversations across epochs. Per-chat `active → completed → archived` and permanent deletion are optional future functionality, disabled by default until provider semantics are verified. Unrelated conversations/projects, title matches and provider-wide cleanup are forbidden.
 
-- [ ] Write failing tests for active protection, foreign ownership rejection, completed-to-archive transition, archive failure, retry idempotence, optional deletion gate and unrelated-chat non-interaction.
+- [ ] Write failing tests for deleted-project detection, same-name replacement, duplicate-name ambiguity, stale-epoch invalidation, no cross-epoch recovery, ownership protection, and unrelated-project non-interaction. Add per-chat cleanup tests only if that optional capability is explicitly enabled later.
 - [ ] Run tests red.
-- [ ] Implement archive-first cleanup and explicit deletion capability gate.
-- [ ] Run focused cleanup tests and authenticated provider verification.
+- [ ] Implement local invalidation/rebind and new-epoch persistence; do not add remote per-chat cleanup as a prerequisite.
+- [ ] Run focused replacement tests and authenticated provider verification.
 - [ ] Confirm cleanup has no dependency on tunnel teardown or process exit alone.
 
-**Rollback/failure boundary:** Archive failure leaves the record completed and retryable. Deletion failure never rolls back ownership metadata into active and never retries blindly. If provider support is unknown, stop at local `completed`/archive-candidate state.
+**Rollback/failure boundary:** If replacement discovery is ambiguous or verification fails, keep the old epoch stale/orphaned and do not bind a new conversation. If provider deletion semantics are unknown, stop at local invalidation and leave remote cleanup to the user's manual Project deletion workflow.
 
 **Validation command:** `bun test tests/project-cleanup.test.ts tests/project-conversation-registry.test.ts`; authenticated browser/provider verification required.
 
