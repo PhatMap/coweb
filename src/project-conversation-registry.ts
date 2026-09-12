@@ -22,7 +22,7 @@ export type VerifiedConversationBinding = {
 export type ManagedConversationState = "active" | "completed" | "archived" | "stale";
 
 export type OwnershipProof = {
-  createdByCoweb: boolean;
+  createdByCoweb: true;
   verifiedConversationId: string;
   verifiedProjectId?: string;
 };
@@ -104,9 +104,17 @@ function validateRecord(record: unknown): asserts record is ManagedConversation 
     throw new Error("Invalid conversation ownership proof");
   }
   const proof = candidate.ownershipProof as OwnershipProof;
-  if (typeof proof.createdByCoweb !== "boolean") throw new Error("Invalid ownership proof owner");
+  if (proof.createdByCoweb !== true) throw new Error("Invalid CoWeb ownership proof owner");
   requireNonEmptyString(proof.verifiedConversationId, "ownership proof conversation ID");
   if (proof.verifiedProjectId !== undefined) requireNonEmptyString(proof.verifiedProjectId, "ownership proof project ID");
+  if (proof.verifiedConversationId !== candidate.verifiedConversationId || proof.verifiedConversationId !== candidate.conversationId) {
+    throw new Error("Ownership proof conversation ID does not match the verified conversation");
+  }
+  if (proof.verifiedProjectId !== undefined
+    && (proof.verifiedProjectId !== candidate.verifiedProjectId
+      || proof.verifiedProjectId !== candidate.project.projectId)) {
+    throw new Error("Ownership proof project ID does not match the verified project");
+  }
 }
 
 function validateSnapshot(value: unknown): asserts value is RegistrySnapshot {
@@ -147,6 +155,7 @@ export class ProjectConversationRegistry {
     if (typeof taskId !== "string" || taskId.length === 0) return undefined;
     validateProject(project);
     return this.read().records.find((record) => record.state === "active"
+      && record.ownershipProof.createdByCoweb === true
       && record.taskId === taskId
       && sameProject(record.project, project)
       && (conversationId === undefined || record.conversationId === conversationId));

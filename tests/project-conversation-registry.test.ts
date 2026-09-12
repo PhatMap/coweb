@@ -157,7 +157,7 @@ test("archiving an active record directly is rejected", () => {
 
 test("records not owned by CoWeb cannot transition", () => {
   const path = fixturePath("foreign");
-  const snapshot: RegistrySnapshot = {
+  const snapshot = {
     version: 1,
     revision: 1,
     records: [{
@@ -167,11 +167,74 @@ test("records not owned by CoWeb cannot transition", () => {
       lastUsedAt: "2026-09-12T00:00:00.000Z",
       ownershipProof: { createdByCoweb: false, verifiedConversationId: "conversation-1" },
     }],
-  };
+  } as unknown as RegistrySnapshot;
   writeFileSync(path, `${JSON.stringify(snapshot)}\n`);
   const { registry: store } = registry(path);
 
-  expect(() => store.archive("task-1", "conversation-1")).toThrow(/owned/i);
+  expect(() => store.archive("task-1", "conversation-1")).toThrow(/ownership|owned|proof/i);
+});
+
+test("persisted active records with a false CoWeb ownership proof are rejected", () => {
+  const path = fixturePath("unowned-active");
+  const snapshot = {
+    version: 1,
+    revision: 1,
+    records: [{
+      ...binding(),
+      state: "active",
+      createdAt: "2026-09-12T00:00:00.000Z",
+      lastUsedAt: "2026-09-12T00:00:00.000Z",
+      ownershipProof: { createdByCoweb: false, verifiedConversationId: "conversation-1", verifiedProjectId: "provider-project-a" },
+    }],
+  } as unknown as RegistrySnapshot;
+  writeFileSync(path, `${JSON.stringify(snapshot)}\n`);
+
+  expect(() => registry(path).registry.read()).toThrow(/owned|proof/i);
+});
+
+test("persisted ownership proof must match the exact conversation identity", () => {
+  const path = fixturePath("mismatched-proof-conversation");
+  const snapshot: RegistrySnapshot = {
+    version: 1,
+    revision: 1,
+    records: [{
+      ...binding(),
+      state: "active",
+      createdAt: "2026-09-12T00:00:00.000Z",
+      lastUsedAt: "2026-09-12T00:00:00.000Z",
+      ownershipProof: { createdByCoweb: true, verifiedConversationId: "other-conversation", verifiedProjectId: "provider-project-a" },
+    }],
+  };
+  writeFileSync(path, `${JSON.stringify(snapshot)}\n`);
+
+  expect(() => registry(path).registry.read()).toThrow(/conversation/i);
+});
+
+test("persisted ownership proof must match the exact project identity when present", () => {
+  const path = fixturePath("mismatched-proof-project");
+  const snapshot: RegistrySnapshot = {
+    version: 1,
+    revision: 1,
+    records: [{
+      ...binding(),
+      state: "active",
+      createdAt: "2026-09-12T00:00:00.000Z",
+      lastUsedAt: "2026-09-12T00:00:00.000Z",
+      ownershipProof: { createdByCoweb: true, verifiedConversationId: "conversation-1", verifiedProjectId: "other-project" },
+    }],
+  };
+  writeFileSync(path, `${JSON.stringify(snapshot)}\n`);
+
+  expect(() => registry(path).registry.read()).toThrow(/project/i);
+});
+
+test("valid CoWeb ownership proof still round-trips and remains discoverable", () => {
+  const path = fixturePath("owned-round-trip");
+  const store = registry(path).registry;
+  const record = store.activate(binding());
+
+  expect(store.read().records).toEqual([record]);
+  expect(store.findActive("task-1", project(), "conversation-1")).toEqual(record);
 });
 
 test("active records cannot be archived by cleanup", () => {
