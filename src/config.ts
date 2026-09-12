@@ -14,6 +14,13 @@ export type RuntimeMode = "browser-only" | "full";
 export type BrowserHostMode = "managed-chrome" | "launcher";
 export type BrowserInteractionMode = "automatic" | "manual";
 export type SubagentProtocol = "compatibility-v1" | "native";
+export type ChatMode = "temporary" | "project";
+
+export interface ProjectChatConfig {
+  mode: "project";
+  projectUrl: string;
+  projectId?: string;
+}
 
 /**
  * ChatGPT caches a connector's public MCP contract by connector identity. The direct turn-token
@@ -67,6 +74,8 @@ export interface AppConfig {
   purpose?: "dev-harness";
   releaseVersion: string;
   mode: RuntimeMode;
+  chatMode: ChatMode;
+  projectChat?: ProjectChatConfig;
   subagentProtocol: SubagentProtocol;
   host: "127.0.0.1";
   port: number;
@@ -196,6 +205,7 @@ export function defaultConfig(mode: RuntimeMode = "browser-only"): AppConfig {
     version: 3,
     releaseVersion: VERSION,
     mode,
+    chatMode: "temporary",
     subagentProtocol: "compatibility-v1",
     host: "127.0.0.1",
     port: 17841,
@@ -372,6 +382,45 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   if (typeof parsed.releaseVersion !== "string" || !parsed.releaseVersion.trim()) throw new Error(`Missing releaseVersion in ${path}`);
   if (parsed.mode !== "browser-only" && parsed.mode !== "full") throw new Error(`Invalid runtime mode in ${path}`);
+  const chatMode = parsed.chatMode ?? "temporary";
+  if (chatMode !== "temporary" && chatMode !== "project") {
+    throw new Error(`Invalid chatMode in ${path}`);
+  }
+  let projectChat: ProjectChatConfig | undefined;
+  if (chatMode === "project") {
+    const candidate = parsed.projectChat;
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error(`Project Chat configuration is required in ${path}`);
+    }
+    if (candidate.mode !== "project") {
+      throw new Error(`Invalid projectChat.mode in ${path}`);
+    }
+    if (typeof candidate.projectUrl !== "string" || !candidate.projectUrl.trim()) {
+      throw new Error(`Invalid projectChat.projectUrl in ${path}`);
+    }
+    let projectUrl: URL;
+    try {
+      projectUrl = new URL(candidate.projectUrl);
+    } catch {
+      throw new Error(`Invalid projectChat.projectUrl in ${path}`);
+    }
+    if (projectUrl.protocol !== "https:") {
+      throw new Error(`Project Chat projectUrl must use HTTPS in ${path}`);
+    }
+    if (candidate.projectId !== undefined
+      && (typeof candidate.projectId !== "string"
+        || !candidate.projectId.trim()
+        || candidate.projectId.length > 256
+        || /[\s\u0000-\u001F\u007F]/u.test(candidate.projectId))) {
+      // Provider-specific project ID syntax is unknown — requires authenticated browser verification.
+      throw new Error(`Invalid projectChat.projectId in ${path}`);
+    }
+    projectChat = {
+      mode: "project",
+      projectUrl: projectUrl.href,
+      ...(candidate.projectId !== undefined ? { projectId: candidate.projectId } : {}),
+    };
+  }
   const subagentProtocol = parsed.subagentProtocol ?? "compatibility-v1";
   if (subagentProtocol !== "compatibility-v1" && subagentProtocol !== "native") {
     throw new Error(`Invalid subagentProtocol in ${path}`);
@@ -509,6 +558,8 @@ function parseConfig(value: unknown, path: string): AppConfig {
   }
   return {
     ...parsed,
+    chatMode,
+    ...(projectChat ? { projectChat } : { projectChat: undefined }),
     appName: expectedAppName,
     automaticAppName,
     manualAppName,

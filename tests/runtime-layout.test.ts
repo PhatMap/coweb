@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -17,6 +17,7 @@ import {
   resolveBrokerEndpoint,
   resolveInteractionConnectorIdentities,
   runtimeCommandForProcess,
+  saveConfig,
   ZERO_RISK_CHATGPT_CONNECTOR_NAME,
 } from "../src/config";
 import { removeLegacyRuntimeArtifacts } from "../src/service";
@@ -99,6 +100,139 @@ test("default setup uses the fixed production connector identities", () => {
   expect(defaultConfig("full").subagentProtocol).toBe("compatibility-v1");
   expect(defaultConfig("full").browserInteractionMode).toBe("automatic");
   expect(defaultConfig("full").zeroRiskProEnabled).toBe(false);
+});
+
+function configFixture(root: string): Record<string, unknown> {
+  const config = { ...defaultConfig("browser-only") } as unknown as Record<string, unknown>;
+  config.storageStatePath = join(root, "browser", "storage-state.json");
+  config.brokerSocketPath = defaultBrokerEndpoint(root);
+  return config;
+}
+
+function writeConfigFixture(root: string, overrides: Record<string, unknown> = {}): void {
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "config.json"), `${JSON.stringify({ ...configFixture(root), ...overrides })}\n`);
+}
+
+function normalizedConfigRecord(config: unknown): Record<string, unknown> {
+  return config as Record<string, unknown>;
+}
+
+test("legacy config without chatMode normalizes to temporary", () => {
+  const root = join(tmpdir(), `coweb-chat-mode-legacy-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.COWEB_HOME = root;
+  writeConfigFixture(root);
+
+  expect(normalizedConfigRecord(loadConfig()).chatMode).toBe("temporary");
+});
+
+test("default and explicit temporary chat mode normalize identically", () => {
+  const root = join(tmpdir(), `coweb-chat-mode-temporary-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.COWEB_HOME = root;
+  writeConfigFixture(root, { chatMode: "temporary" });
+
+  expect(normalizedConfigRecord(loadConfig()).chatMode).toBe("temporary");
+  expect(normalizedConfigRecord(defaultConfig()).chatMode).toBe("temporary");
+});
+
+test("valid Project Chat configuration requires an HTTPS absolute project URL", () => {
+  const root = join(tmpdir(), `coweb-chat-mode-project-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.COWEB_HOME = root;
+  writeConfigFixture(root, {
+    chatMode: "project",
+    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/g/g-p-123/project" },
+  });
+
+  expect(normalizedConfigRecord(loadConfig())).toMatchObject({
+    chatMode: "project",
+    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/g/g-p-123/project" },
+  });
+});
+
+test.each([
+  ["missing Project config", { chatMode: "project" }, "Project Chat configuration is required"],
+  ["empty project URL", { chatMode: "project", projectChat: { mode: "project", projectUrl: "" } }, "projectUrl"],
+  ["malformed project URL", { chatMode: "project", projectChat: { mode: "project", projectUrl: "not-a-url" } }, "projectUrl"],
+  ["HTTP project URL", { chatMode: "project", projectChat: { mode: "project", projectUrl: "http://chatgpt.com/project" } }, "HTTPS"],
+  ["unsupported chat mode", { chatMode: "workspace" }, "Invalid chatMode"],
+  ["inconsistent Project mode", { chatMode: "project", projectChat: { mode: "temporary", projectUrl: "https://chatgpt.com/project" } }, "projectChat.mode"],
+] as const)("rejects %s", (_name, overrides, message) => {
+  const root = join(tmpdir(), `coweb-chat-mode-invalid-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.COWEB_HOME = root;
+  writeConfigFixture(root, overrides);
+
+  expect(() => loadConfig()).toThrow(message);
+});
+
+test("Project ID uses generic safe validation until provider format is verified", () => {
+  const root = join(tmpdir(), `coweb-chat-mode-project-id-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.COWEB_HOME = root;
+  writeConfigFixture(root, {
+    chatMode: "project",
+    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/project", projectId: "project-123" },
+  });
+
+  expect((normalizedConfigRecord(loadConfig()).projectChat as Record<string, unknown>).projectId).toBe("project-123");
+});
+
+test("rejects Project IDs with whitespace or control characters", () => {
+  const root = join(tmpdir(), `coweb-chat-mode-project-id-invalid-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.COWEB_HOME = root;
+  writeConfigFixture(root, {
+    chatMode: "project",
+    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/project", projectId: "project id" },
+  });
+
+  expect(() => loadConfig()).toThrow("Invalid projectChat.projectId");
+});
+
+test("Temporary mode strips Project config before it reaches runtime consumers", () => {
+  const root = join(tmpdir(), `coweb-chat-mode-temporary-project-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.COWEB_HOME = root;
+  writeConfigFixture(root, {
+    chatMode: "temporary",
+    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/project" },
+  });
+
+  expect(normalizedConfigRecord(loadConfig())).toMatchObject({ chatMode: "temporary" });
+  expect(normalizedConfigRecord(loadConfig()).projectChat).toBeUndefined();
+});
+
+test("legacy config round-trip preserves the normalized temporary contract", () => {
+  const root = join(tmpdir(), `coweb-chat-mode-round-trip-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.COWEB_HOME = root;
+  writeConfigFixture(root);
+
+  const config = loadConfig();
+  saveConfig(config);
+  const saved = JSON.parse(readFileSync(join(root, "config.json"), "utf8")) as Record<string, unknown>;
+  expect(saved.chatMode).toBe("temporary");
+});
+
+test("Project config serialization adds no browser identity or credential fields", () => {
+  const root = join(tmpdir(), `coweb-chat-mode-serialization-${process.pid}-${Date.now()}`);
+  roots.push(root);
+  process.env.COWEB_HOME = root;
+  writeConfigFixture(root, {
+    chatMode: "project",
+    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/project" },
+  });
+
+  saveConfig(loadConfig());
+  const saved = JSON.parse(readFileSync(join(root, "config.json"), "utf8")) as Record<string, unknown>;
+  expect(saved.projectChat).toEqual({ mode: "project", projectUrl: "https://chatgpt.com/project" });
+  expect(saved).not.toHaveProperty("cookies");
+  expect(saved).not.toHaveProperty("authorization");
+  expect(saved).not.toHaveProperty("accessToken");
+  expect(saved).not.toHaveProperty("browserIdentity");
 });
 
 test.each([
