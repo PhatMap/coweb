@@ -2987,7 +2987,8 @@ test("Bigger Context fits mixed-density whole records within both token and comp
       { stagingEffort: stagingMode.effort, maxStageMessageTokens, maxStageChars, finalMessageTokens, finalMessageChars: final.length },
     )).not.toThrow();
   }
-}, 20_000);
+// Real tokenization of large whitespace records takes over 20 seconds on Windows.
+}, 60_000);
 
 test("Bigger Context preflight expands only the total context ceiling and keeps each message boundary", () => {
   const plus = {

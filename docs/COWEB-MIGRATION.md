@@ -61,3 +61,29 @@ CoWeb uses separate Electron userData, cookies, config, logs, runtime and DEV st
 The external Codex route, fixed default bridge port and ChatGPT connector names remain
 shared contracts. Installation isolation does not imply simultaneous ownership of those
 external resources. Disconnect an existing bridge before assigning its Codex route to CoWeb.
+
+## Retained controls: exact inventory
+
+- `CODEX_CHATGPT_WEB_BUN`, `CODEX_WEB_GPT_BUN`: explicit Bun executable selection.
+- `CODEX_CHATGPT_WEB_EMBEDDED_BUN`: package builder's pinned embedded runtime.
+- `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS`: opt-in browser screenshots.
+- `CODEX_CHATGPT_WEB_BROWSER_HELPER_PROCESS`: helper-process mode.
+- `CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN`: helper-to-launcher authentication.
+- `CODEX_WEB_GPT_SMOKE_FILE`: test readiness marker supplied by the smoke runner.
+- `CODEX_WEB_GPT_LINUX_LIBNOTIFY`, `CODEX_WEB_GPT_LINUX_LIBNOTIFY_OUTPUT`,
+  `CODEX_WEB_GPT_APPIMAGE_TOOLS_OUTPUT`: Linux packaging tool inputs/outputs.
+- `__CODEX_WEB_GPT_SURFACE_ID__`, `__CODEX_WEB_GPT_TURN_OBSERVER__`,
+  `__CODEX_WEB_GPT_RESPONSE_OBSERVERS__`: browser-host injected observer keys.
+- `window.codexWebLauncher`: existing private preload/renderer IPC surface. Its
+  channels and API shapes remain compatible; it does not select filesystem state.
+
+Upstream tutorial/marketing recordings remain on the local disk but are ignored by
+Git and no longer loaded by the UI. CoWeb's own SVG/PNG/ICO monogram replaces the
+previous ChatGPT app icon. Existing connector instructions remain as text.
+
+## Validation environment
+
+Bun must be installed in a durable directory, not a temporary extraction path: the
+runtime intentionally rejects ephemeral executables. Windows symlink fixtures need
+an elevated test process or an already-enabled Developer Mode. The large-context
+fixture now allows 60 seconds for real tokenization; its assertions are unchanged.

@@ -30,6 +30,8 @@ The launcher owns the browser and runtime lifecycle. Production state defaults t
 This repository requires Bun 1.4.0. Use the exact version pinned in `package.json`;
 installing with a newer Bun is not the supported verification workflow. Node.js is
 also required for launcher tests and tooling (validation host: Node.js 25.9.0).
+Install Bun in a durable directory, not a temporary extraction path. Windows
+symlink tests require an elevated terminal or an already-enabled Developer Mode.
 A desktop session is needed for Electron. Authenticated model requests additionally
 require ChatGPT access; production routing requires Codex, and Full Harness requires
 an OpenAI tunnel and its runtime key.

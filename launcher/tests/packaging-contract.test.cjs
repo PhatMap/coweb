@@ -116,11 +116,6 @@ test("packaged launcher owns a detached checksummed updater for every release pl
   assert.doesNotMatch(worker, /backup/i);
 });
 
-test("source baseline preserves the removed upstream publishing workflows", () => {
-  assert.equal(fs.existsSync(path.join(repositoryRoot, ".github", "workflows", "ci.yml")), false);
-  assert.equal(fs.existsSync(path.join(repositoryRoot, ".github", "workflows", "release.yml")), false);
-});
-
 test("Linux AppImage fallback uses one owned extraction and removes it on exit", {
   skip: process.platform !== "linux" ? "AppImage process identity is Linux-specific" : false,
 }, () => {

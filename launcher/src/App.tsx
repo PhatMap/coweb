@@ -8,7 +8,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
 import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
 import { Icon, type IconName } from "./icons";
 import type {
@@ -1223,7 +1222,6 @@ function McpSurface({
       body: manualInteraction ? copy.manualMcpStepThreeBody : copy.mcpStepThreeBody,
     },
   ], [copy, manualInteraction]);
-  const guideMedia = MCP_GUIDE_MEDIA[step];
 
   const move = async (next: number) => {
     setStep(next);
@@ -1310,9 +1308,6 @@ function McpSurface({
       </div>
 
       <div className="mcp-stage">
-        {guideMedia ? (
-
-        ) : null}
 
         <AnimatePresence mode="wait" initial={false}>
           <motion.section

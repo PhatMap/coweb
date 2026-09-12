@@ -145,7 +145,7 @@ The default isolated home is:
 ```
 
 Set `COWEB_DEV_HOME` to choose another absolute DEV home. Generic `--home`,
-`COWEB_HOME`, `CODEX_HOME`, and `CODEX_WEB_GPT_LAUNCHER_DATA_DIR` never collapse the DEV
+`COWEB_HOME`, `CODEX_HOME`, and `COWEB_LAUNCHER_DATA_DIR` never collapse the DEV
 launcher into production storage.
 
 ## Isolation contract

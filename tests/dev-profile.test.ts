@@ -81,9 +81,9 @@ test("installed launcher discovery has explicit platform candidates", () => {
     homeDirectory: "/home/tester",
     environment: { PATH: "/usr/local/bin:/usr/bin" },
   })).toEqual([
-    "/home/tester/.local/bin/coweb",
-    "/usr/local/bin/coweb",
-    "/usr/bin/coweb",
+    "/home/tester/.local/bin/coweb-launcher",
+    "/usr/local/bin/coweb-launcher",
+    "/usr/bin/coweb-launcher",
   ]);
   expect(installedLauncherCandidates({
     platform: "win32",
