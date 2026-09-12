@@ -17,9 +17,7 @@ export type SubagentProtocol = "compatibility-v1" | "native";
 export type ChatMode = "temporary" | "project";
 
 export interface ProjectChatConfig {
-  mode: "project";
-  projectUrl: string;
-  projectId?: string;
+  name: string;
 }
 
 /**
@@ -392,33 +390,11 @@ function parseConfig(value: unknown, path: string): AppConfig {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
       throw new Error(`Project Chat configuration is required in ${path}`);
     }
-    if (candidate.mode !== "project") {
-      throw new Error(`Invalid projectChat.mode in ${path}`);
-    }
-    if (typeof candidate.projectUrl !== "string" || !candidate.projectUrl.trim()) {
-      throw new Error(`Invalid projectChat.projectUrl in ${path}`);
-    }
-    let projectUrl: URL;
-    try {
-      projectUrl = new URL(candidate.projectUrl);
-    } catch {
-      throw new Error(`Invalid projectChat.projectUrl in ${path}`);
-    }
-    if (projectUrl.protocol !== "https:") {
-      throw new Error(`Project Chat projectUrl must use HTTPS in ${path}`);
-    }
-    if (candidate.projectId !== undefined
-      && (typeof candidate.projectId !== "string"
-        || !candidate.projectId.trim()
-        || candidate.projectId.length > 256
-        || /[\s\u0000-\u001F\u007F]/u.test(candidate.projectId))) {
-      // Provider-specific project ID syntax is unknown — requires authenticated browser verification.
-      throw new Error(`Invalid projectChat.projectId in ${path}`);
+    if (typeof candidate.name !== "string" || !candidate.name.trim()) {
+      throw new Error(`Invalid projectChat.name in ${path}`);
     }
     projectChat = {
-      mode: "project",
-      projectUrl: projectUrl.href,
-      ...(candidate.projectId !== undefined ? { projectId: candidate.projectId } : {}),
+      name: candidate.name.trim(),
     };
   }
   const subagentProtocol = parsed.subagentProtocol ?? "compatibility-v1";

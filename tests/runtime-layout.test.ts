@@ -137,28 +137,27 @@ test("default and explicit temporary chat mode normalize identically", () => {
   expect(normalizedConfigRecord(defaultConfig()).chatMode).toBe("temporary");
 });
 
-test("valid Project Chat configuration requires an HTTPS absolute project URL", () => {
+test("valid Project Chat configuration accepts a user-facing Project name", () => {
   const root = join(tmpdir(), `coweb-chat-mode-project-${process.pid}-${Date.now()}`);
   roots.push(root);
   process.env.COWEB_HOME = root;
   writeConfigFixture(root, {
     chatMode: "project",
-    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/g/g-p-123/project" },
+    projectChat: { name: "CoWeb" },
   });
 
   expect(normalizedConfigRecord(loadConfig())).toMatchObject({
     chatMode: "project",
-    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/g/g-p-123/project" },
+    projectChat: { name: "CoWeb" },
   });
 });
 
 test.each([
   ["missing Project config", { chatMode: "project" }, "Project Chat configuration is required"],
-  ["empty project URL", { chatMode: "project", projectChat: { mode: "project", projectUrl: "" } }, "projectUrl"],
-  ["malformed project URL", { chatMode: "project", projectChat: { mode: "project", projectUrl: "not-a-url" } }, "projectUrl"],
-  ["HTTP project URL", { chatMode: "project", projectChat: { mode: "project", projectUrl: "http://chatgpt.com/project" } }, "HTTPS"],
+  ["missing Project name", { chatMode: "project", projectChat: {} }, "projectChat.name"],
+  ["whitespace-only Project name", { chatMode: "project", projectChat: { name: "  \t" } }, "projectChat.name"],
+  ["non-string Project name", { chatMode: "project", projectChat: { name: 42 } }, "projectChat.name"],
   ["unsupported chat mode", { chatMode: "workspace" }, "Invalid chatMode"],
-  ["inconsistent Project mode", { chatMode: "project", projectChat: { mode: "temporary", projectUrl: "https://chatgpt.com/project" } }, "projectChat.mode"],
 ] as const)("rejects %s", (_name, overrides, message) => {
   const root = join(tmpdir(), `coweb-chat-mode-invalid-${process.pid}-${Date.now()}`);
   roots.push(root);
@@ -168,28 +167,16 @@ test.each([
   expect(() => loadConfig()).toThrow(message);
 });
 
-test("Project ID uses generic safe validation until provider format is verified", () => {
+test("Project URL-only config is rejected by the name-based contract", () => {
   const root = join(tmpdir(), `coweb-chat-mode-project-id-${process.pid}-${Date.now()}`);
   roots.push(root);
   process.env.COWEB_HOME = root;
   writeConfigFixture(root, {
     chatMode: "project",
-    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/project", projectId: "project-123" },
+    projectChat: { projectUrl: "https://chatgpt.com/project" },
   });
 
-  expect((normalizedConfigRecord(loadConfig()).projectChat as Record<string, unknown>).projectId).toBe("project-123");
-});
-
-test("rejects Project IDs with whitespace or control characters", () => {
-  const root = join(tmpdir(), `coweb-chat-mode-project-id-invalid-${process.pid}-${Date.now()}`);
-  roots.push(root);
-  process.env.COWEB_HOME = root;
-  writeConfigFixture(root, {
-    chatMode: "project",
-    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/project", projectId: "project id" },
-  });
-
-  expect(() => loadConfig()).toThrow("Invalid projectChat.projectId");
+  expect(() => loadConfig()).toThrow("projectChat.name");
 });
 
 test("Temporary mode strips Project config before it reaches runtime consumers", () => {
@@ -198,7 +185,7 @@ test("Temporary mode strips Project config before it reaches runtime consumers",
   process.env.COWEB_HOME = root;
   writeConfigFixture(root, {
     chatMode: "temporary",
-    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/project" },
+    projectChat: { name: "CoWeb" },
   });
 
   expect(normalizedConfigRecord(loadConfig())).toMatchObject({ chatMode: "temporary" });
@@ -223,12 +210,14 @@ test("Project config serialization adds no browser identity or credential fields
   process.env.COWEB_HOME = root;
   writeConfigFixture(root, {
     chatMode: "project",
-    projectChat: { mode: "project", projectUrl: "https://chatgpt.com/project" },
+    projectChat: { name: "CoWeb" },
   });
 
   saveConfig(loadConfig());
   const saved = JSON.parse(readFileSync(join(root, "config.json"), "utf8")) as Record<string, unknown>;
-  expect(saved.projectChat).toEqual({ mode: "project", projectUrl: "https://chatgpt.com/project" });
+  expect(saved.projectChat).toEqual({ name: "CoWeb" });
+  expect(saved).not.toHaveProperty("projectUrl");
+  expect(saved).not.toHaveProperty("projectId");
   expect(saved).not.toHaveProperty("cookies");
   expect(saved).not.toHaveProperty("authorization");
   expect(saved).not.toHaveProperty("accessToken");
